@@ -1,0 +1,162 @@
+
+name: Generate Repository Blueprint
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  generate-blueprint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download repository source
+        uses: actions/checkout@v4
+
+      - name: Generate readable directory report
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from collections import Counter
+
+          root = Path(".").resolve()
+          output = Path("repository-blueprint.txt")
+
+          excluded_dirs = {
+              ".git", "node_modules", "dist", "build",
+              ".next", ".expo", ".gradle", "coverage",
+              ".idea", ".vscode"
+          }
+
+          files = []
+          directories = []
+
+          for current, dirs, names in os.walk(root):
+              dirs[:] = sorted(
+                  d for d in dirs
+                  if d not in excluded_dirs
+              )
+
+              current_path = Path(current)
+
+              for name in dirs:
+                  directories.append(
+                      (current_path / name).relative_to(root)
+                  )
+
+              for name in sorted(names):
+                  path = current_path / name
+                  if path == output:
+                      continue
+                  if path.is_symlink():
+                      continue
+                  files.append(path.relative_to(root))
+
+          files.sort(key=lambda p: p.as_posix().lower())
+          directories.sort(key=lambda p: p.as_posix().lower())
+
+          lines = [
+              "REPOSITORY BLUEPRINT",
+              "=" * 60,
+              "",
+              "1. REPOSITORY SUMMARY",
+              f"Total files: {len(files)}",
+              f"Total directories: {len(directories)}",
+              "",
+              "Excluded generated/dependency directories:",
+              ", ".join(sorted(excluded_dirs)),
+              "",
+              "2. COMPLETE DIRECTORY TREE",
+              "",
+              "."
+          ]
+
+          children = {}
+          for path in directories + files:
+              parent = path.parent.as_posix()
+              children.setdefault(parent, []).append(path)
+
+          def render(parent, prefix=""):
+              entries = children.get(parent, [])
+              entries.sort(key=lambda p: (
+                  p.name.lower(),
+                  p.is_file() if p.exists() else False
+              ))
+
+              for index, path in enumerate(entries):
+                  last = index == len(entries) - 1
+                  branch = "`-- " if last else "|-- "
+                  is_dir = path in directories
+                  suffix = "/" if is_dir else ""
+
+                  lines.append(
+                      prefix + branch + path.name + suffix
+                  )
+
+                  if is_dir:
+                      next_prefix = prefix + (
+                          "    " if last else "|   "
+                      )
+                      render(path.as_posix(), next_prefix)
+
+          render(".")
+
+          lines.extend([
+              "",
+              "3. COMPLETE FILE INVENTORY",
+              ""
+          ])
+
+          for path in files:
+              lines.append(path.as_posix())
+
+          lines.extend([
+              "",
+              "4. FILE TYPES",
+              ""
+          ])
+
+          extensions = Counter(
+              path.suffix.lower() or "[no extension]"
+              for path in files
+          )
+
+          for extension, count in sorted(extensions.items()):
+              lines.append(f"{extension}: {count}")
+
+          lines.extend([
+              "",
+              "5. ROOT-LEVEL FILES",
+              ""
+          ])
+
+          for path in files:
+              if len(path.parts) == 1:
+                  lines.append(path.name)
+
+          lines.extend([
+              "",
+              "END OF REPORT",
+              ""
+          ])
+
+          output.write_text("\n".join(lines), encoding="utf-8")
+          print(f"Created {output}")
+          print(f"Files listed: {len(files)}")
+          print(f"Directories listed: {len(directories)}")
+          PY
+
+      - name: Upload readable report
+        uses: actions/upload-artifact@v4
+        with:
+          name: repository-blueprint
+          path: repository-blueprint.txt
+          if-no-files-found: error
+          retention-days: 30
